@@ -7,7 +7,7 @@ from runtime.agent_outcome import build_agent_outcome
 from runtime.decision_producer import get_decision_producer
 from runtime.decision_router import route_decision
 from runtime.office.router import route_office_handoff
-from runtime.outcome_builder import build_outcome_from_reply
+from runtime.outcome_builder import build_outcome_from_execution
 from runtime.renderers.selector import render_outcome_for_channel
 
 
@@ -16,7 +16,7 @@ def handle_runtime_context(runtime_ctx: Dict[str, Any]) -> Dict[str, Any]:
     agent_type = tenant.get("agent_type") or "FRONTDESK"
 
     text = ((runtime_ctx.get("current_turn") or {}).get("text") or "").strip()
-    channel = "web"
+    channel = runtime_ctx.get("channel") or "web"
 
     routing = route_decision(text)
 
@@ -27,9 +27,14 @@ def handle_runtime_context(runtime_ctx: Dict[str, Any]) -> Dict[str, Any]:
 
     execution = _execute_decision(decision)
 
-    outcome_obj = build_outcome_from_reply(
-        execution["reply"],
+    outcome_obj = build_outcome_from_execution(
+        execution,
         decision_type=decision.decision_type,
+        template_family=(
+            decision.response_plan.template_family
+            if getattr(decision, "response_plan", None)
+            else None
+        ),
     )
 
     render = render_outcome_for_channel(outcome_obj, channel)
@@ -50,15 +55,26 @@ def handle_runtime_context(runtime_ctx: Dict[str, Any]) -> Dict[str, Any]:
         execution_trace={
             "decision": decision.to_dict(),
             "office": office_trace,
+            "outcome": outcome_obj.to_dict(),
+            "render": render.to_dict() if hasattr(render, "to_dict") else {},
         },
-        observations=[],
-        state_patch={},
+        observations=execution.get("observations") or [],
+        state_patch=execution.get("state_patch") or {},
     )
 
     return apply_outcome_guardrails(outcome)
 
 
 def _apply_frontdesk_bridge(decision: Any, text: str):
+    """
+    Transitional Phase 16F bridge.
+
+    Canonical target:
+    move these routing signals into decision_router / L1-L2 layer.
+    Kept temporarily so Phase 17 STT can reuse the existing
+    voice smoke path without breaking office routing.
+    """
+
     t = text.lower()
 
     if "human" in t:
@@ -85,6 +101,26 @@ def _apply_frontdesk_bridge(decision: Any, text: str):
 
 def _execute_decision(decision: Any) -> Dict[str, Any]:
     if decision.decision_type == "handoff":
-        return route_office_handoff(decision)
+        execution = route_office_handoff(decision)
+        execution.setdefault("outcome_type", "handoff")
+        execution.setdefault("semantic", {})
+        execution["semantic"].setdefault("target_office", decision.target_office)
+        execution["semantic"].setdefault("handoff_reason", decision.handoff_reason)
+        execution.setdefault("observations", [])
+        execution.setdefault("state_patch", {})
+        return execution
 
-    return {"reply": "Could you clarify your request?"}
+    return {
+        "outcome_type": decision.decision_type,
+        "semantic": {
+            "action": "clarify",
+            "reason": "fallback_default_answer",
+        },
+        "text": "Could you clarify your request?",
+        "office_execution": {
+            "mode": "orchestrator_fallback_v1",
+            "target": decision.target_office or "FRONTDESK",
+        },
+        "observations": [],
+        "state_patch": {},
+    }
