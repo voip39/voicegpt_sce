@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "required": ["sce_version", "event", "subject", "content", "route", "context", "meta"],
+  "properties": {
+    "sce_version": { "type": "string" },
+    "event": { "type": "object" },
+    "subject": { "type": "object" },
+    "content": { "type": "object" },
+    "route": { "type": "object" },
+    "context": { "type": "object" },
+    "meta": { "type": "object" }
+  }
+}
